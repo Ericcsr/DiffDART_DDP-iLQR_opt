@@ -1,7 +1,7 @@
 import torch
 from pdb import set_trace as bp
 
-import diffdart as dart
+import nimblephysics as dart
 from typing import Tuple, Callable, List
 import numpy as np
 import math

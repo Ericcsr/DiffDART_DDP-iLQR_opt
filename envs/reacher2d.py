@@ -3,7 +3,7 @@ from envs.diffdart_env import DiffDartEnv
 from pdb import set_trace as bp
 import torch
 from .utils import ComputeCostGrad, dart_map_pos
-import diffdart as dart
+import nimblephysics as dart
 
 class DartReacher2dEnv(DiffDartEnv):
     def __init__(self,FD=False):

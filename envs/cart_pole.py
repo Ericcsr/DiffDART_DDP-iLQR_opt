@@ -9,7 +9,7 @@ class DartCartPoleEnv(DiffDartEnv):#, utils.EzPickle):
     def __init__(self,FD=False):
         #control_bounds = np.array([[1.0],[-1.0]])
         frame_skip = 1
-        DiffDartEnv.__init__(self, 'cartpole.skel', frame_skip, dt=0.02,FD=FD) #4, control_bounds, dt=0.02)#, disableViewer=False)
+        DiffDartEnv.__init__(self, 'cartpole.skel', frame_skip, dt=0.001,FD=FD) #4, control_bounds, dt=0.02)#, disableViewer=False)
         #utils.EzPickle.__init__(self)
         #self.action_scale = 100
         self.control_dofs = np.array([0])
