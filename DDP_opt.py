@@ -1,4 +1,5 @@
 import numpy as np
+import copy
 import torch
 import nimblephysics as dart
 from pdb import set_trace as bp
@@ -14,22 +15,45 @@ class DDP_Traj_Optimizer():
 				 U_guess = None, # Control initial guess (optional)
 				 FD = False, #whether to use finite differencing for gradients
 				 lr = 1.0, # initial lr value (will be reduced with linesearch)
-				 patience = 8 # linesearch/regularization patience
-				 ):
+				 patience = 8, # linesearch/regularization patience
+				 visualize_all = False, # If we need to save and visualize all trajectories
+				 alter_strategy = False,
+				 perturb_state = False,
+				 weights = (0.1, 0.9)):
 		#From the diffDart environment, obtain the world object and the running and terminal cost functions
 		self.Env = Env(FD=FD)
 		self.world = self.Env.dart_world
+		if alter_strategy:
+			self.world_no_contact = self.Env.dart_world2
+			self.robot_no_contact = self.Env.robot_skeleton_no_contact
 		self.robot = self.Env.robot_skeleton
 		self.running_cost = self.Env.run_cost()
 		self.terminal_cost = self.Env.ter_cost()
 		self.T = T
 		self.dt = self.Env.dt #this includes frameskip!
 		self.N = int(T / self.dt) #number of timesteps
-		self.dofs =  self.robot.getNumDofs()
-		self.n_states = self.dofs*2
+		self.dofs =  np.concatenate([self.Env.state_dofs,
+									 self.Env.state_dofs + self.world.getNumDofs()])
+		print(self.dofs, self.world.getNumDofs())
+		self.n_states = len(self.dofs)
 		self.control_dofs = self.Env.control_dofs
-		self.n_controls = len(self.control_dofs) 
+		self.n_controls = len(self.control_dofs)
 		self.frame_skip = self.Env.frame_skip
+		self.visualize_all = visualize_all
+		self.init_socket = False
+		self.alter_strategy = alter_strategy
+		self.threshold = 0.5
+		self.gamma = 0.5
+		self.weights = weights
+		self.perturb_state = perturb_state
+
+		self.idx_x = self.dofs.repeat(self.n_states)
+		self.idx_y = np.tile(self.dofs, self.n_states)
+		
+		# These two buffers are used to store intermediate trajectories
+		self.x_buffer = []
+		self.u_buffer = []
+
 		assert self.frame_skip == 1 #DDP currently supports no frame skip!
 		self.profiler = Profiler()
 		
@@ -41,8 +65,8 @@ class DDP_Traj_Optimizer():
 		else:
 			self.X0 = np.concatenate((self.robot.getPositions(), self.robot.getVelocities()))
 
-		self.robot.setPositions(self.X[0,0:self.dofs])
-		self.robot.setVelocities(self.X[0,self.dofs:])
+		self.robot.setPositions(self.X[0,0:self.n_states//2])
+		self.robot.setVelocities(self.X[0,self.n_states//2:])
 		#self.Env.gui.stateMachine().renderWorld(self.world)
 		#bp()
 		if U_guess is not None:
@@ -86,9 +110,6 @@ class DDP_Traj_Optimizer():
 		self.mu_min = 1e-6
 		self.mu = 100.*self.mu_min
 
-
-		
-
 	def optimize(self,maxIter,thresh=None):
 		t = time.time()
 		self.cost = self.simulate_traj(self.X, self.U)
@@ -97,6 +118,10 @@ class DDP_Traj_Optimizer():
 		while i < maxIter and not self.early_termination:
 			self.forward_pass()
 			self.backward_pass()
+			self.threshold *= self.gamma
+			if self.visualize_all:
+				self.x_buffer.append(copy.deepcopy(self.X))
+				self.u_buffer.append(copy.deepcopy(self.U))
 			
 			self.Costs.append(self.cost)
 
@@ -111,7 +136,6 @@ class DDP_Traj_Optimizer():
 			i += 1
 		print('---Optimization completed in ',time.time()-t,'sec---')
 		return self.X, self.U, self.Costs
-
 
 	def forward_pass(self):
 		Xnew = self.X.copy()
@@ -130,7 +154,7 @@ class DDP_Traj_Optimizer():
 			self.Luu[j,:,:] = l_uu*self.dt
 			self.Lux[j,:,:] = l_ux*self.dt
 		
-			Xnew[j+1,:], self.Fx[j,:,:], self.Fu[j,:,:] = self.dynamics(Xnew[j,:],Unew[j,:],compute_grads=True)
+			Xnew[j+1,:], self.Fx[j,:,:], self.Fu[j,:,:] = self.dynamics(Xnew[j,:],Unew[j,:],compute_grads=True, perturb_state=self.perturb_state)
 		#print("Process Cost: ", cost)
 		
 		cost+= self.terminal_cost(Xnew[-1,:])
@@ -146,7 +170,7 @@ class DDP_Traj_Optimizer():
 				#print('Linesearch: decreasing alpha to ', self.alpha)
 				self.patience -= 1	
 				self.forward_pass() #retry with smaller learning rate
-		elif not (self.cost - cost) >= 0:
+		elif (not (self.cost - cost) >= 0 and not self.perturb_state):
 			#print(f"Current Cost:{self.cost} Candidate Cost: {cost}")
 			if self.patience == 0:
 				print('Linesearch patience limit met, exiting... ')
@@ -164,8 +188,6 @@ class DDP_Traj_Optimizer():
 			self.alpha = self.alpha_reset_value #reset learning rate
 			#return cost
 	
-
-
 	def backward_pass(self):
 		# initialize backward pass:
 		#self.DeltaJ = 0.0
@@ -211,41 +233,59 @@ class DDP_Traj_Optimizer():
 		else:
 			return
 
-
-
-	def dynamics(self,x,u,compute_grads = False):
-		pos = x[:self.dofs]
-		vel = x[self.dofs:]
+	def dynamics(self,x,u,compute_grads = False, perturb_state = False):
+		if perturb_state:
+			epsilon = np.random.random()
+			if epsilon > (1-self.threshold):
+				x += np.random.random() * 0.02 - 0.01
+		pos = x[:self.n_states//2]
+		vel = x[self.n_states//2:]
 		self.robot.setPositions(pos)
 		self.robot.setVelocities(vel)
+		if self.alter_strategy:
+			self.robot_no_contact.setPositions(pos)
+			self.robot_no_contact.setVelocities(vel)
 	
-		a = np.zeros(self.dofs)
+		a = np.zeros(self.world.getNumDofs())
 		a[self.control_dofs] =  u
 		for _ in range(self.frame_skip):
 			self.world.setControlForces(a.clip(min=-35, max=35))
+			if self.alter_strategy:
+				self.world_no_contact.setControlForces(a.clip(min=-35, max=35))
 			snapshot = dart.neural.forwardPass(self.world)
+			if self.alter_strategy:
+				snapshot_no_contact = dart.neural.forwardPass(self.world_no_contact)
+			
 		x_next = np.concatenate((self.robot.getPositions(), self.robot.getVelocities()))
 		if compute_grads:
-			forceVel = snapshot.getControlForceVelJacobian(self.world, perfLog=None)
-			forcePos = np.zeros_like(forceVel)
-			velVel = snapshot.getVelVelJacobian(self.world)
-			velPos = snapshot.getVelPosJacobian(self.world)
-			posVel = snapshot.getPosVelJacobian(self.world)
-			posPos = snapshot.getPosPosJacobian(self.world)
+			actionJacobian = self.getActionJacobian(snapshot, self.world)
+			if self.alter_strategy:
+				actionJacobian = self.weights[0] * actionJacobian + self.weights[1] * self.getActionJacobian(snapshot_no_contact,self.world_no_contact)
+			
+			stateJacobian = self.getStateJacobian(snapshot, self.world)
+			if self.alter_strategy:
+				stateJacobian = self.weights[0] * stateJacobian + self.weights[1] * self.getStateJacobian(snapshot_no_contact,self.world_no_contact)
 
-			Fx = np.block([
-			    [posPos[-self.dofs:,-self.dofs:], velPos[-self.dofs:,-self.dofs:]],
-			    [posVel[-self.dofs:,-self.dofs:], velVel[-self.dofs:,-self.dofs:]]
-			])
-
-			idx = self.control_dofs-self.dofs
-			Fu = np.block([
-			    [forcePos[-self.dofs:,idx]],
-			    [forceVel[-self.dofs:,idx]]
-			])			
+			Fx = stateJacobian			
+			Fu = actionJacobian
 			return x_next, Fx, Fu
 		else:
 			return x_next
+
+	def getStateJacobian(self, snapshot, world):
+		stateJacobian = snapshot.getStateJacobian(world)
+		
+		return stateJacobian[self.idx_x, self.idx_y].reshape(self.n_states, self.n_states)
+
+	def getActionJacobian(self, snapshot, world):
+		forceVel = snapshot.getControlForceVelJacobian(world, perfLog = None)
+		forcePos = np.zeros_like(forceVel)
+		
+		return np.block([
+			[forcePos[self.dofs[:self.n_states//2].repeat(self.n_controls), np.tile(self.control_dofs, self.n_states//2)].reshape(self.n_states//2, self.n_controls)],
+			[forceVel[self.dofs[:self.n_states//2].repeat(self.n_controls), np.tile(self.control_dofs, self.n_states//2)].reshape(self.n_states//2, self.n_controls)],
+		])
+
 
 	def is_invertible(self,M):
 		if M.shape[0] == 1 and abs(M)<1e-6:
@@ -268,25 +308,28 @@ class DDP_Traj_Optimizer():
 		self.mu = self.mu*self.DELTA if self.mu*self.DELTA>self.mu_min else 0.0
 
 
-	def simulate_traj(self, X, U, render = False):
+	def simulate_traj(self, X, U, render = False, iter_num=None):
 		cost = 0
 		if render:
-			self.gui = dart.NimbleGUI(self.world)
-			self.gui.serve(8080)
+			if self.init_socket == False:
+				self.init_socket = True
+				self.gui = dart.NimbleGUI(self.world)
+				self.gui.serve(8080)
 			self.gui.displayState(torch.from_numpy(self.world.getState()))
+			if not iter_num == None:
+				print(f"Iteration: {iter_num} begin")
 			input('Press enter to begin rendering')
+
 		for j in range(self.N-1):
 			X[j+1,:] = self.dynamics(X[j,:], U[j,:])
-			#print("Before x: ", X[j,:], "Action: ", U[j,:], "After x: ", X[j+1,:])
 			if render:
-				print("Action:", U[j,:])
 				self.gui.displayState(torch.from_numpy(self.world.getState()))
 				time.sleep(self.dt)
 			cost += self.running_cost(X[j,:],U[j,:])*self.dt
 		cost += self.terminal_cost(X[-1,:])
 
 		if render: # repeat animation 5 times
-			for _ in range(5):
+			for _ in range(1):
 				time.sleep(10*self.dt)
 				for j in range(self.N-1):
 					X[j+1,:] = self.dynamics(X[j,:], U[j,:])

@@ -7,11 +7,14 @@ from .utils import ComputeCostGrad
 class CustomDroneEnv(DiffDartEnv):
     def __init__(self,FD=False):
         frame_skip = 1
-        DiffDartEnv.__init__(self,None,frame_skip,dt=0.01,FD=FD)
+        DiffDartEnv.__init__(self,None,frame_skip,dt=0.002,FD=FD)
         # Create a world calling same name
         self.dart_world = dart.simulation.World()
-        self.dart_world.setGravity([0, -9.81, 0])
+        self.dart_world2 = dart.simulation.World()
+        self.dart_world.setGravity([0, -2.0, 0])
+        self.dart_world2.setGravity([0, -2.0, 0])
         droneSkel = dart.dynamics.Skeleton()
+        droneSkel2 = dart.dynamics.Skeleton()
 
         joint, drone = droneSkel.createPrismaticJointAndBodyNodePair()
         drone.setMass(2.0)
@@ -22,10 +25,24 @@ class CustomDroneEnv(DiffDartEnv):
         droneVisual.setColor([0.5, 0.5, 0.5])
         joint.setPositionUpperLimit(0, 10)
         joint.setPositionLowerLimit(0, -10)
-        joint.setControlForceUpperLimit(0 ,20)
-        joint.setControlForceLowerLimit(0 ,-20)
+        joint.setControlForceUpperLimit(0 ,25)
+        joint.setControlForceLowerLimit(0 ,-25)
 
         self.dart_world.addSkeleton(droneSkel)
+
+        joint2, drone2 = droneSkel2.createPrismaticJointAndBodyNodePair()
+        drone2.setMass(2.0)
+        joint2.setAxis([0, 1, 0])
+        droneShape2 = drone2.createShapeNode(dart.dynamics.BoxShape([1.0, 1.0, 1.0]))
+        droneShape2.createCollisionAspect()
+        droneVisual2 = droneShape2.createVisualAspect()
+        droneVisual2.setColor([0.5, 0.5, 0.5])
+        joint2.setPositionUpperLimit(0, 10)
+        joint2.setPositionLowerLimit(0, -10)
+        joint2.setControlForceUpperLimit(0 ,25)
+        joint2.setControlForceLowerLimit(0 ,-25)
+
+        self.dart_world2.addSkeleton(droneSkel2)
 
         floorSkel = dart.dynamics.Skeleton()
         floorJoint, floor = floorSkel.createWeldJointAndBodyNodePair()
@@ -39,7 +56,9 @@ class CustomDroneEnv(DiffDartEnv):
         self.dart_world.addSkeleton(floorSkel)
 
         self.dart_world.setTimeStep(self.timestep)
+        self.dart_world2.setTimeStep(self.timestep)
         self.robot_skeleton = droneSkel
+        self.robot_skeleton_no_contact = droneSkel2
         self.control_dofs = np.array([0])
 
     def running_cost(self, x, u, compute_grads = False):
@@ -50,7 +69,7 @@ class CustomDroneEnv(DiffDartEnv):
 
         run_cost = torch.sum(0.01 * torch.mul(u,u))
         
-        run_cost += torch.sum(torch.mul(coeff, torch.mul(x - x_target, x - x_target)))
+        #run_cost += torch.sum(torch.mul(coeff, torch.mul(x - x_target, x - x_target)))
 
         if compute_grads:
             run_cost, grad_x, Hess_xx, grad_u, Hess_uu, Hess_ux, Hess_xu = ComputeCostGrad(run_cost, x, u=u)
