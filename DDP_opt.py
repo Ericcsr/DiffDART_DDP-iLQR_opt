@@ -67,6 +67,7 @@ class DDP_Traj_Optimizer():
 
 		self.robot.setPositions(self.X[0,0:self.n_states//2])
 		self.robot.setVelocities(self.X[0,self.n_states//2:])
+		self.init_state = self.world.getState()
 		#self.Env.gui.stateMachine().renderWorld(self.world)
 		#bp()
 		if U_guess is not None:
@@ -116,6 +117,7 @@ class DDP_Traj_Optimizer():
 		prev_cost = np.inf
 		i = 0
 		while i < maxIter and not self.early_termination:
+			self.reset()
 			self.forward_pass()
 			self.backward_pass()
 			self.threshold *= self.gamma
@@ -137,6 +139,7 @@ class DDP_Traj_Optimizer():
 		print('---Optimization completed in ',time.time()-t,'sec---')
 		return self.X, self.U, self.Costs
 
+	# ========== Helper Functions begin ==========
 	def forward_pass(self):
 		Xnew = self.X.copy()
 		Unew = self.U.copy()
@@ -249,9 +252,9 @@ class DDP_Traj_Optimizer():
 		a = np.zeros(self.world.getNumDofs())
 		a[self.control_dofs] =  u
 		for _ in range(self.frame_skip):
-			self.world.setControlForces(a.clip(min=-35, max=35))
+			self.world.setControlForces(a.clip(min=-50, max=50))
 			if self.alter_strategy:
-				self.world_no_contact.setControlForces(a.clip(min=-35, max=35))
+				self.world_no_contact.setControlForces(a.clip(min=-50, max=50))
 			snapshot = dart.neural.forwardPass(self.world)
 			if self.alter_strategy:
 				snapshot_no_contact = dart.neural.forwardPass(self.world_no_contact)
@@ -274,18 +277,11 @@ class DDP_Traj_Optimizer():
 
 	def getStateJacobian(self, snapshot, world):
 		stateJacobian = snapshot.getStateJacobian(world)
-		
 		return stateJacobian[self.idx_x, self.idx_y].reshape(self.n_states, self.n_states)
 
 	def getActionJacobian(self, snapshot, world):
-		forceVel = snapshot.getControlForceVelJacobian(world, perfLog = None)
-		forcePos = np.zeros_like(forceVel)
-		
-		return np.block([
-			[forcePos[self.dofs[:self.n_states//2].repeat(self.n_controls), np.tile(self.control_dofs, self.n_states//2)].reshape(self.n_states//2, self.n_controls)],
-			[forceVel[self.dofs[:self.n_states//2].repeat(self.n_controls), np.tile(self.control_dofs, self.n_states//2)].reshape(self.n_states//2, self.n_controls)],
-		])
-
+		actionJacobian = snapshot.getActionJacobian(world)
+		return actionJacobian[self.dofs,:]
 
 	def is_invertible(self,M):
 		if M.shape[0] == 1 and abs(M)<1e-6:
@@ -306,8 +302,8 @@ class DDP_Traj_Optimizer():
 	def decrease_mu(self):
 		self.DELTA = min(1.0/self.DELTA0, self.DELTA/self.DELTA0)
 		self.mu = self.mu*self.DELTA if self.mu*self.DELTA>self.mu_min else 0.0
-
-
+	# ========== Helper Function End ============
+	
 	def simulate_traj(self, X, U, render = False, iter_num=None):
 		cost = 0
 		if render:
@@ -319,10 +315,11 @@ class DDP_Traj_Optimizer():
 			if not iter_num == None:
 				print(f"Iteration: {iter_num} begin")
 			input('Press enter to begin rendering')
-
+		self.reset()
 		for j in range(self.N-1):
 			X[j+1,:] = self.dynamics(X[j,:], U[j,:])
 			if render:
+				#print("Truc State:", X[j+1,:],"Full State:", self.world.getState())
 				self.gui.displayState(torch.from_numpy(self.world.getState()))
 				time.sleep(self.dt)
 			cost += self.running_cost(X[j,:],U[j,:])*self.dt
@@ -331,6 +328,7 @@ class DDP_Traj_Optimizer():
 		if render: # repeat animation 5 times
 			for _ in range(1):
 				time.sleep(10*self.dt)
+				self.reset()
 				for j in range(self.N-1):
 					X[j+1,:] = self.dynamics(X[j,:], U[j,:])
 					#print("Before x: ", X[j,:], "Action: ", U[j,:], "After x: ", X[j+1,:])
@@ -338,6 +336,9 @@ class DDP_Traj_Optimizer():
 					time.sleep(self.dt)
 
 		return cost
+
+	def reset(self):
+		self.world.setState(self.init_state)
 
 
 	

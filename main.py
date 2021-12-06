@@ -1,6 +1,7 @@
 import numpy as np
 from pdb import set_trace as bp
 from DDP_opt import DDP_Traj_Optimizer
+from MultiShot_opt import MultiShot_Traj_Optimizer
 from envs.cart_pole import DartCartPoleEnv
 from envs.snake_7link import DartSnake7LinkEnv
 from envs.reacher2d import DartReacher2dEnv
@@ -12,16 +13,17 @@ from envs.custom_cartpole import CustomCartPoleEnv
 from envs.contact_cartpole import ContactCartPoleEnv
 from envs.drone import CustomDroneEnv
 import nimblephysics as dart
+from argparse import ArgumentParser, ArgumentTypeError
 
 
-def main():
+def main(args):
 	#Choose example and corresponding initial condition X0:
 
 	#Env = CustomCartPoleEnv
-	#X0 = [1., 3.1415, 0.0, 0.0]
+	#X0 = [1., 15 / 180 * 3.1415, 0.0, 0.0]
 
 	Env = ContactCartPoleEnv
-	X0 = [1., 20/180 * 3.1415, 0.0, 0.0]
+	X0 = [1., 15/180 * 3.1415, 0.0, 0.0]
 
 	#Env = DartCartPoleEnv
 	#X0 = [0., 3.1415, 0., 0.] 
@@ -60,16 +62,21 @@ def main():
 	lr = 0.5 #learning rate, default value 1.0
 	patience = 10
 
-	maxIter = 10# maximum number of iterations
+	maxIter = 100# maximum number of iterations
 	threshold = None #0.0001#Optional, set to 'None' otherwise. Early stopping of optimization if cost doesn't improve more than this between iterations.
 
-	DDP = DDP_Traj_Optimizer(Env=Env,T=T,X0=X0,FD=FD,U_guess=U_guess,lr=lr,patience=patience, visualize_all= True, alter_strategy=False)
-	x,u,cost = DDP.optimize(maxIter = maxIter, thresh=threshold)# lr=lr,linesearch=False)
-
+	Optim = MultiShot_Traj_Optimizer(Env=Env, T=T, X0=X0, FD=FD)
+	# Optim = DDP_Traj_Optimizer(Env=Env,T=T,X0=X0,FD=FD,U_guess=U_guess,lr=lr,patience=patience, visualize_all= args.visualize_all, alter_strategy=args.alter_strategy)
+	x,u,cost = Optim.optimize(maxIter = maxIter, thresh=threshold)
+	print("Enter Here")
 	#bp()
 	#c = DDP.simulate_traj(x, u, render = True)
-	for i, (X, U) in enumerate(zip(DDP.x_buffer,DDP.u_buffer)):
-		c =  DDP.simulate_traj(X, U, render = True, iter_num = i)
+	if args.visualize_all:
+		for i, (X, U) in enumerate(zip(Optim.x_buffer,Optim.u_buffer)):
+			c =  Optim.simulate_traj(X, U, render = True, iter_num = i)
+			print('Optimal trajectory cost: ', c)
+	else:
+		c = Optim.simulate_traj(x, u, render = True, iter_num = 0)
 		print('Optimal trajectory cost: ', c)
 	from matplotlib import pyplot as plt
 	plt.figure()
@@ -83,10 +90,10 @@ def main():
 	plt.title('Cost')
 	plt.xlabel('iteration')
 	plt.show()
-	bp()
-	DDP.gui.stopServing()
-
-
 
 if __name__ == "__main__":
-	main()
+	parser = ArgumentParser()
+	parser.add_argument("--visualize_all", action = "store_true", default=False)
+	parser.add_argument("--alter_strategy", action = "store_true", default = False)
+	args = parser.parse_args()
+	main(args)

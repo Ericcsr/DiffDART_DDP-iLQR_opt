@@ -7,7 +7,7 @@ from .utils import ComputeCostGrad
 class CustomCartPoleEnv(DiffDartEnv):
     def __init__(self,FD=False):
         frame_skip = 1
-        DiffDartEnv.__init__(self,None,frame_skip,dt=0.01,FD=FD)
+        DiffDartEnv.__init__(self,None,frame_skip,dt=0.002,FD=FD)
         # Create a world calling same name
         self.dart_world = dart.simulation.World()
         self.dart_world.setGravity([0, -9.81, 0])
@@ -39,18 +39,22 @@ class CustomCartPoleEnv(DiffDartEnv):
 
         self.dart_world.setTimeStep(self.timestep)
         self.robot_skeleton = cartpole
+        self.dart_world.removeDofFromActionSpace(1)
         self.control_dofs = np.array([0])
+        # State Dofs specify which dof should be included as state space
+        self.state_dofs = np.array([0,1])
+        self.target = np.array([0.5, 0., 0., 0.])
 
     def running_cost(self, x, u, compute_grads = False):
         x = torch.tensor(x, requires_grad=True)
         u = torch.tensor(u, requires_grad=True)
 
-        #x_target = torch.FloatTensor([0.5, 0., 0., 0.])
-        #coeff = torch.FloatTensor([0.1, 0.5, 0.06, 0.1])
+        x_target = torch.from_numpy(self.target)
+        coeff = torch.FloatTensor([0.1, 0.5, 0.06, 0.1]) * 2
 
-        run_cost = torch.sum(0.01 * torch.mul(u,u))
+        run_cost = torch.sum(0.001 * torch.mul(u,u))
         
-        #run_cost += torch.sum(torch.mul(coeff, torch.mul(x - x_target, x - x_target)))
+        run_cost += torch.sum(torch.mul(coeff, torch.mul(x - x_target, x - x_target)))
 
         if compute_grads:
             run_cost, grad_x, Hess_xx, grad_u, Hess_uu, Hess_ux, Hess_xu = ComputeCostGrad(run_cost, x, u=u)
@@ -61,7 +65,7 @@ class CustomCartPoleEnv(DiffDartEnv):
     def terminal_cost(self, x, compute_grads = False):
         x = torch.tensor(x, requires_grad=True)
 
-        x_target = torch.FloatTensor([0.5, 0., 0., 0.])
+        x_target = torch.from_numpy(self.target)
         coeff = torch.FloatTensor([10, 50, 6, 10])
         ter_cost = torch.sum(torch.mul(coeff, torch.mul(x - x_target, x - x_target)))
 
