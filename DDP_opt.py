@@ -25,9 +25,6 @@ class DDP_Traj_Optimizer():
 		#From the diffDart environment, obtain the world object and the running and terminal cost functions
 		self.Env = Env(FD=FD)
 		self.world = self.Env.dart_world
-		if alter_strategy:
-			self.world_no_contact = self.Env.dart_world2
-			self.robot_no_contact = self.Env.robot_skeleton_no_contact
 		self.robot = self.Env.robot_skeleton
 		self.running_cost = self.Env.run_cost()
 		self.terminal_cost = self.Env.ter_cost()
@@ -71,9 +68,6 @@ class DDP_Traj_Optimizer():
 
 		self.robot.setPositions(self.X[0,0:self.n_states//2])
 		self.robot.setVelocities(self.X[0,self.n_states//2:])
-		if self.alter_strategy:
-			self.robot_no_contact.setPositions(self.X[0,0:self.n_states//2])
-			self.robot_no_contact.setVelocities(self.X[0,self.n_states//2:])
 		self.init_state = self.world.getState()
 		#self.Env.gui.stateMachine().renderWorld(self.world)
 		#bp()
@@ -270,26 +264,20 @@ class DDP_Traj_Optimizer():
 		vel = x[self.n_states//2:]
 		self.robot.setPositions(pos)
 		self.robot.setVelocities(vel)
-		if self.alter_strategy:
-			self.robot_no_contact.setPositions(pos)
-			self.robot_no_contact.setVelocities(vel)
 	
 		a = np.zeros(self.world.getNumDofs())
 		a[self.control_dofs] =  u
 		for _ in range(self.frame_skip):
 			self.world.setControlForces(a.clip(min=-self.action_clip, max=self.action_clip))
 			snapshot = dart.neural.forwardPass(self.world)
-			if self.alter_strategy:
-				self.world_no_contact.setControlForces(a.clip(min=-self.action_clip, max=self.action_clip))
-				snapshot_no_contact = dart.neural.forwardPass(self.world_no_contact)
 			
 		x_next = np.concatenate((self.robot.getPositions(), self.robot.getVelocities()))
 		if compute_grads:
 			actionJacobian = self.getActionJacobian(snapshot, self.world)
 			stateJacobian = self.getStateJacobian(snapshot, self.world)
 			if self.alter_strategy:
-				Fu_alter = self.getActionJacobian(snapshot_no_contact,self.world_no_contact)				
-				Fx_alter = self.getStateJacobian(snapshot_no_contact,self.world_no_contact)
+				Fu_alter = self.getContactFreeActionJacobian(snapshot,self.world)				
+				Fx_alter = self.getContactFreeStateJacobian(snapshot,self.world)
 
 			Fx = stateJacobian			
 			Fu = actionJacobian
@@ -304,8 +292,16 @@ class DDP_Traj_Optimizer():
 		stateJacobian = snapshot.getStateJacobian(world)
 		return stateJacobian[self.idx_x, self.idx_y].reshape(self.n_states, self.n_states)
 
+	def getContactFreeStateJacobian(self, snapshot, world):
+		stateJacobian = snapshot.getContactFreeStateJacobian(world)
+		return stateJacobian[self.idx_x, self.idx_y].reshape(self.n_states, self.n_states)
+
 	def getActionJacobian(self, snapshot, world):
 		actionJacobian = snapshot.getActionJacobian(world)
+		return actionJacobian[self.dofs,:]
+
+	def getContactFreeActionJacobian(self, snapshot, world):
+		actionJacobian = snapshot.getContactFreeActionJacobian(world)
 		return actionJacobian[self.dofs,:]
 
 	def is_invertible(self,M):
@@ -363,8 +359,6 @@ class DDP_Traj_Optimizer():
 
 	def reset(self):
 		self.world.setState(self.init_state)
-		if self.alter_strategy:
-			self.world_no_contact.setState(self.init_state)
 
 
 	
