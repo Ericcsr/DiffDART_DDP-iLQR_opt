@@ -5,7 +5,7 @@ import torch
 from .utils import ComputeCostGrad
 
 class ContactCartPoleEnv(DiffDartEnv):
-    def __init__(self,FD=False):
+    def __init__(self,FD=False, margin = 2.5):
         frame_skip = 1
         DiffDartEnv.__init__(self,None,frame_skip,dt=0.002,FD=FD)
         # Create a world calling same name
@@ -44,12 +44,12 @@ class ContactCartPoleEnv(DiffDartEnv):
         leftSpring.setAxis([1, 0, 0]) # Similar to cartrail
         leftSpring.setControlForceUpperLimit(0, 0)
         leftSpring.setControlForceLowerLimit(0, 0)
-        leftPlaneShape = leftPlane.createShapeNode(dart.dynamics.BoxShape([0.1, 1.5, 3.0]))
+        leftPlaneShape = leftPlane.createShapeNode(dart.dynamics.BoxShape([0.1, 2.0, 3.0]))
         leftPlanVisual = leftPlaneShape.createVisualAspect()
         leftPlanVisual.setColor([0.6,0.6,0.6])
         leftPlaneShape.createCollisionAspect()
         leftPlaneOffset = dart.math.Isometry3()
-        leftPlaneOffset.set_translation([-2.0, 1.5, 0])
+        leftPlaneOffset.set_translation([-margin, 1.5, 0])
         leftSpring.setTransformFromParentBodyNode(leftPlaneOffset)
         leftSpring.setSpringStiffness(0, 5.0)
         leftSpring.setDampingCoefficient(0, 0.4)
@@ -61,12 +61,12 @@ class ContactCartPoleEnv(DiffDartEnv):
         rightSpring.setAxis([1, 0, 0])
         rightSpring.setControlForceUpperLimit(0, 0)
         rightSpring.setControlForceLowerLimit(0, 0)
-        rightPlaneShape = rightPlane.createShapeNode(dart.dynamics.BoxShape([0.1, 1.5, 3.0]))
+        rightPlaneShape = rightPlane.createShapeNode(dart.dynamics.BoxShape([0.1, 2.0, 3.0]))
         rightPlaneVisual = rightPlaneShape.createVisualAspect()
         rightPlaneVisual.setColor([0.6, 0.6, 0.6])
         rightPlaneShape.createCollisionAspect()
         rightPlaneOffset = dart.math.Isometry3()
-        rightPlaneOffset.set_translation([2.0, 1.5, 0])
+        rightPlaneOffset.set_translation([margin, 1.5, 0])
         rightSpring.setTransformFromParentBodyNode(rightPlaneOffset)
         rightSpring.setSpringStiffness(0, 5.0)
         rightSpring.setDampingCoefficient(0, 0.4)
@@ -80,13 +80,19 @@ class ContactCartPoleEnv(DiffDartEnv):
 
         self.robot_skeleton = cartpole
 
+        self.dart_world2 = self.dart_world.clone()
+        self.dart_world2.getSkeleton('cartpole').getBodyNode(1).removeAllShapeNodes()
+        self.robot_skeleton_no_contact = self.dart_world2.getSkeleton('cartpole')
+        
+        for i in range(3):
+            print(self.dart_world2.getSkeleton(i).getName())
+        
+
         # Here define the dofs that related to robot instead of other part of the environment
         self.control_dofs = np.array([0])
         self.state_dofs = np.array([0,1])
         self.target = np.array([0.5, 0., 0., 0.])
-         
-        for i in range(3):
-            print(self.dart_world.getSkeleton(i).getName())
+        
         
 
     def running_cost(self, x, u, compute_grads = False):
@@ -96,7 +102,7 @@ class ContactCartPoleEnv(DiffDartEnv):
         # x_target = torch.from_numpy(self.target).float()
         # coeff = torch.FloatTensor([0.1, 0.5, 0.06, 0.1])
 
-        run_cost = torch.sum(0.005 * torch.mul(u,u))
+        run_cost = torch.sum(0.01 * torch.mul(u,u))
         
         # run_cost += torch.sum(torch.mul(coeff, torch.mul(x - x_target, x - x_target)))
 

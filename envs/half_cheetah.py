@@ -18,17 +18,16 @@ class DartHalfCheetahEnv(DiffDartEnv):
         frame_skip = 1
         DiffDartEnv.__init__(self, ['half_cheetah.skel'], frame_skip,dt=0.002,FD=FD)# obs_dim, self.control_bounds, disableViewer=True, dt=0.01)
         self.ndofs = self.robot_skeleton.getNumDofs()
-        #bp()
-        self.control_dofs = np.arange(0,self.ndofs) #TODO needs to change!
-        #self.initial_local_coms = [np.copy(bn.local_com()) for bn in self.robot_skeleton.bodynodes]
-
-        #self.dart_world.set_collision_detector(3)
-
-        #self.robot_skeleton=self.dart_world.skeletons[-1]
-
-        #tils.EzPickle.__init__(self)
-
-
+        self.dart_world.removeDofFromActionSpace(0)
+        self.dart_world.removeDofFromActionSpace(1)
+        self.dart_world.removeDofFromActionSpace(2)
+        
+        self.dart_world2 = self.dart_world.clone()
+        self.dart_world2.getSkeleton('ground skeleton').getBodyNode(0).removeAllShapeNodes()
+        self.robot_skeleton_no_contact = self.dart_world2.getSkeleton(1)
+        
+        self.control_dofs = np.arange(6)
+        self.state_dofs = np.arange(self.ndofs)
 
     def running_cost(self, x, u, compute_grads = False): #define the running cost
         x = torch.tensor(x, requires_grad=True)

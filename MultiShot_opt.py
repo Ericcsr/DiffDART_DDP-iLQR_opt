@@ -19,7 +19,8 @@ class MultiShot_Traj_Optimizer():
         self.init_state = self.world.getState()
         # Set the init state as required
         self.active_dofs = np.concatenate([self.Env.state_dofs, self.Env.state_dofs + self.world.getNumDofs()])
-        self.init_state[self.active_dofs] = X0
+        if X0 != None:
+            self.init_state[self.active_dofs] = X0
         print(self.init_state)
         self.reset()
         self.target = self.Env.target

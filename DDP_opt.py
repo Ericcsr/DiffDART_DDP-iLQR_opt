@@ -1,3 +1,4 @@
+from matplotlib import use
 import numpy as np
 import copy
 import torch
@@ -19,7 +20,8 @@ class DDP_Traj_Optimizer():
 				 visualize_all = False, # If we need to save and visualize all trajectories
 				 alter_strategy = False,
 				 perturb_state = False,
-				 weights = (0.1, 0.9)):
+				 use_heuristic = False,
+				 weights = [0.1, 0.9]):
 		#From the diffDart environment, obtain the world object and the running and terminal cost functions
 		self.Env = Env(FD=FD)
 		self.world = self.Env.dart_world
@@ -44,8 +46,10 @@ class DDP_Traj_Optimizer():
 		self.alter_strategy = alter_strategy
 		self.threshold = 0.5
 		self.gamma = 0.5
+		self.action_clip = 100
 		self.weights = weights
 		self.perturb_state = perturb_state
+		self.use_heuristic = use_heuristic
 
 		self.idx_x = self.dofs.repeat(self.n_states)
 		self.idx_y = np.tile(self.dofs, self.n_states)
@@ -67,6 +71,9 @@ class DDP_Traj_Optimizer():
 
 		self.robot.setPositions(self.X[0,0:self.n_states//2])
 		self.robot.setVelocities(self.X[0,self.n_states//2:])
+		if self.alter_strategy:
+			self.robot_no_contact.setPositions(self.X[0,0:self.n_states//2])
+			self.robot_no_contact.setVelocities(self.X[0,self.n_states//2:])
 		self.init_state = self.world.getState()
 		#self.Env.gui.stateMachine().renderWorld(self.world)
 		#bp()
@@ -89,9 +96,12 @@ class DDP_Traj_Optimizer():
 
 		# initialize Jacobians of dynamics, w.r.t. state x and control u
 		self.Fx = np.zeros((self.N-1,self.n_states,self.n_states))   
-		self.Fu = np.zeros((self.N-1,self.n_states,self.n_controls)) 
-		
+		self.Fu = np.zeros((self.N-1,self.n_states,self.n_controls))
 
+		if self.alter_strategy:
+			self.Fx_alter = np.zeros((self.N-1,self.n_states,self.n_states))   
+			self.Fu_alter = np.zeros((self.N-1,self.n_states,self.n_controls))
+	
 		# initialize feedback and feedforward control updates
 		self.K = np.zeros((self.N-1,self.n_controls,self.n_states))
 		self.k = np.zeros((self.N-1,self.n_controls))
@@ -157,7 +167,12 @@ class DDP_Traj_Optimizer():
 			self.Luu[j,:,:] = l_uu*self.dt
 			self.Lux[j,:,:] = l_ux*self.dt
 		
-			Xnew[j+1,:], self.Fx[j,:,:], self.Fu[j,:,:] = self.dynamics(Xnew[j,:],Unew[j,:],compute_grads=True, perturb_state=self.perturb_state)
+			if self.alter_strategy:
+				Xnew[j+1,:], self.Fx[j,:,:], self.Fu[j,:,:], self.Fx_alter[j,:,:], self.Fu_alter[j,:,:] \
+					= self.dynamics(Xnew[j,:],Unew[j,:],compute_grads=True, perturb_state=self.perturb_state)
+			else:
+				Xnew[j+1,:], self.Fx[j,:,:], self.Fu[j,:,:] \
+					= self.dynamics(Xnew[j,:], Unew[j,:], compute_grads=True, perturb_state=self.perturb_state)
 		#print("Process Cost: ", cost)
 		
 		cost+= self.terminal_cost(Xnew[-1,:])
@@ -197,16 +212,26 @@ class DDP_Traj_Optimizer():
 		_, Vx, Vxx = self.terminal_cost(self.X[-1,:],compute_grads=True)
 		j = self.N-2
 		while j >= 0 and not self.early_termination:
+			Fu = self.Fu[j,:,:]
+			Fx = self.Fx[j,:,:]
+			if self.alter_strategy:
+				Fu = self.weights[0] * Fu + self.weights[1] * self.Fu_alter[j,:,:]
+				Fx = self.weights[0] * Fx + self.weights[1] * self.Fx_alter[j,:,:]
+			if self.use_heuristic and not self.alter_strategy:
+				# Need to know the Jacobian wrt contact velocity
+				# Which is Contact Jacobian
+				dV_dx = Vxx @ self.X[j,:] + Vx # Should be a vector considered as upstream gradient
+				pass
 
-			Qx = self.Lx[j,:] + self.Fx[j,:,:].T.dot(Vx)
-			Qu = self.Lu[j,:] + self.Fu[j,:,:].T.dot(Vx)
-			Qxx = self.Lxx[j,:,:] + self.Fx[j,:,:].T.dot(Vxx.dot(self.Fx[j,:,:]))
-			Qux = self.Lux[j,:,:].T + self.Fu[j,:,:].T.dot(Vxx.dot(self.Fx[j,:,:]))
-			Quu = self.Luu[j,:,:] + self.Fu[j,:,:].T.dot(Vxx.dot(self.Fu[j,:,:]))
-			Quubar = self.Luu[j,:,:] + self.Fu[j,:,:].T.dot((Vxx+self.mu*np.eye(Vxx.shape[0])).dot(self.Fu[j,:,:]))
-			Quxbar = self.Lux[j,:,:] + self.Fu[j,:,:].T.dot((Vxx+self.mu*np.eye(Vxx.shape[0])).dot(self.Fx[j,:,:])).T
-			#bp()
 
+			Qx = self.Lx[j,:] + Fx.T.dot(Vx)
+			Qu = self.Lu[j,:] + Fu.T.dot(Vx)
+			Qxx = self.Lxx[j,:,:] + Fx.T.dot(Vxx.dot(Fx))
+			Qux = self.Lux[j,:,:].T + Fu.T.dot(Vxx.dot(Fx))
+			Quu = self.Luu[j,:,:] + Fu.T.dot(Vxx.dot(Fu))
+			Quubar = self.Luu[j,:,:] + Fu.T.dot((Vxx+self.mu*np.eye(Vxx.shape[0])).dot(Fu))
+			Quxbar = self.Lux[j,:,:] + Fu.T.dot((Vxx+self.mu*np.eye(Vxx.shape[0])).dot(Fx)).T
+			
 			if not self.is_invertible(Quubar):
 				if self.patience == 0:
 					self.early_termination = True
@@ -239,7 +264,7 @@ class DDP_Traj_Optimizer():
 	def dynamics(self,x,u,compute_grads = False, perturb_state = False):
 		if perturb_state:
 			epsilon = np.random.random()
-			if epsilon > (1-self.threshold):
+			if epsilon > (1-self.threshold): # self.threshold = 0.5 * 0.9^n
 				x += np.random.random() * 0.02 - 0.01
 		pos = x[:self.n_states//2]
 		vel = x[self.n_states//2:]
@@ -252,26 +277,26 @@ class DDP_Traj_Optimizer():
 		a = np.zeros(self.world.getNumDofs())
 		a[self.control_dofs] =  u
 		for _ in range(self.frame_skip):
-			self.world.setControlForces(a.clip(min=-50, max=50))
-			if self.alter_strategy:
-				self.world_no_contact.setControlForces(a.clip(min=-50, max=50))
+			self.world.setControlForces(a.clip(min=-self.action_clip, max=self.action_clip))
 			snapshot = dart.neural.forwardPass(self.world)
 			if self.alter_strategy:
+				self.world_no_contact.setControlForces(a.clip(min=-self.action_clip, max=self.action_clip))
 				snapshot_no_contact = dart.neural.forwardPass(self.world_no_contact)
 			
 		x_next = np.concatenate((self.robot.getPositions(), self.robot.getVelocities()))
 		if compute_grads:
 			actionJacobian = self.getActionJacobian(snapshot, self.world)
-			if self.alter_strategy:
-				actionJacobian = self.weights[0] * actionJacobian + self.weights[1] * self.getActionJacobian(snapshot_no_contact,self.world_no_contact)
-			
 			stateJacobian = self.getStateJacobian(snapshot, self.world)
 			if self.alter_strategy:
-				stateJacobian = self.weights[0] * stateJacobian + self.weights[1] * self.getStateJacobian(snapshot_no_contact,self.world_no_contact)
+				Fu_alter = self.getActionJacobian(snapshot_no_contact,self.world_no_contact)				
+				Fx_alter = self.getStateJacobian(snapshot_no_contact,self.world_no_contact)
 
 			Fx = stateJacobian			
 			Fu = actionJacobian
-			return x_next, Fx, Fu
+			if self.alter_strategy:
+				return x_next, Fx, Fu, Fx_alter, Fu_alter
+			else:
+				return x_next, Fx, Fu
 		else:
 			return x_next
 
@@ -311,7 +336,7 @@ class DDP_Traj_Optimizer():
 				self.init_socket = True
 				self.gui = dart.NimbleGUI(self.world)
 				self.gui.serve(8080)
-			self.gui.displayState(torch.from_numpy(self.world.getState()))
+			self.gui.displayState(torch.from_numpy(X[0,:]))
 			if not iter_num == None:
 				print(f"Iteration: {iter_num} begin")
 			input('Press enter to begin rendering')
@@ -319,7 +344,6 @@ class DDP_Traj_Optimizer():
 		for j in range(self.N-1):
 			X[j+1,:] = self.dynamics(X[j,:], U[j,:])
 			if render:
-				#print("Truc State:", X[j+1,:],"Full State:", self.world.getState())
 				self.gui.displayState(torch.from_numpy(self.world.getState()))
 				time.sleep(self.dt)
 			cost += self.running_cost(X[j,:],U[j,:])*self.dt
@@ -339,6 +363,8 @@ class DDP_Traj_Optimizer():
 
 	def reset(self):
 		self.world.setState(self.init_state)
+		if self.alter_strategy:
+			self.world_no_contact.setState(self.init_state)
 
 
 	

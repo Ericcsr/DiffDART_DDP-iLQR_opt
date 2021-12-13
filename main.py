@@ -9,6 +9,7 @@ from envs.half_cheetah import DartHalfCheetahEnv
 from envs.inverted_double_pendulum import DartDoubleInvertedPendulumEnv
 from envs.dog import DartDogEnv
 from envs.hopper import DartHopperEnv
+from envs.ur5 import UR5Env
 from envs.custom_cartpole import CustomCartPoleEnv
 from envs.contact_cartpole import ContactCartPoleEnv
 from envs.drone import CustomDroneEnv
@@ -23,7 +24,10 @@ def main(args):
 	#X0 = [1., 15 / 180 * 3.1415, 0.0, 0.0]
 
 	Env = ContactCartPoleEnv
-	X0 = [1., 15/180 * 3.1415, 0.0, 0.0]
+	X0 = [1., 45/180 * 3.1415, 0.0, 0.0]
+
+	#Env = UR5Env
+	#X0 = [3, 5, 5, 5, 5, 5, 0, 0, 0, 0, 0, 0]
 
 	#Env = DartCartPoleEnv
 	#X0 = [0., 3.1415, 0., 0.] 
@@ -38,8 +42,8 @@ def main(args):
 	#Env = DartDoubleInvertedPendulumEnv
 	#X0 = [0., 3.14, 0.0, 0., 0., 0.] 
 
-	# Env = DartHalfCheetahEnv
-	# X0 = None
+	#Env = DartHalfCheetahEnv
+	#X0 = None
 
 	#Env = DartDogEnv
 	#X0 = None
@@ -58,15 +62,15 @@ def main(args):
 	
 	FD = False #whether or not to use finite differencing
 	U_guess = 'random'# 'random' #choose None or 'random' (use random for snake)
-	T = 4.0 # planning horizon in seconds
+	T = 2.0 # planning horizon in seconds
 	lr = 0.5 #learning rate, default value 1.0
 	patience = 10
 
-	maxIter = 100# maximum number of iterations
+	maxIter = 10# maximum number of iterations
 	threshold = None #0.0001#Optional, set to 'None' otherwise. Early stopping of optimization if cost doesn't improve more than this between iterations.
 
-	Optim = MultiShot_Traj_Optimizer(Env=Env, T=T, X0=X0, FD=FD)
-	# Optim = DDP_Traj_Optimizer(Env=Env,T=T,X0=X0,FD=FD,U_guess=U_guess,lr=lr,patience=patience, visualize_all= args.visualize_all, alter_strategy=args.alter_strategy)
+	#Optim = MultiShot_Traj_Optimizer(Env=Env, T=T, X0=X0, FD=FD)
+	Optim = DDP_Traj_Optimizer(Env=Env,T=T,X0=X0,FD=FD,U_guess=U_guess,lr=lr,patience=patience, visualize_all= args.visualize_all, alter_strategy=args.alter_strategy, perturb_state=args.perturb_state, weights=[1-args.weight,args.weight])
 	x,u,cost = Optim.optimize(maxIter = maxIter, thresh=threshold)
 	print("Enter Here")
 	#bp()
@@ -95,5 +99,7 @@ if __name__ == "__main__":
 	parser = ArgumentParser()
 	parser.add_argument("--visualize_all", action = "store_true", default=False)
 	parser.add_argument("--alter_strategy", action = "store_true", default = False)
+	parser.add_argument("--perturb_state", action = "store_true", default=False)
+	parser.add_argument("--weight", type = float, default = 0.9)
 	args = parser.parse_args()
 	main(args)

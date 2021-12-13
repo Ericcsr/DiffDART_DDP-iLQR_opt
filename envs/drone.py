@@ -60,11 +60,13 @@ class CustomDroneEnv(DiffDartEnv):
         self.robot_skeleton = droneSkel
         self.robot_skeleton_no_contact = droneSkel2
         self.control_dofs = np.array([0])
+        self.state_dofs = np.array([0])
+        self.target = np.array([1.0, 0.0])
 
     def running_cost(self, x, u, compute_grads = False):
         x = torch.tensor(x, requires_grad=True)
         u = torch.tensor(u, requires_grad=True)
-        x_target = torch.FloatTensor([1.0, 0.])
+        x_target = torch.from_numpy(self.target)
         coeff = torch.FloatTensor([0.5, 0.5,])
 
         run_cost = torch.sum(0.01 * torch.mul(u,u))
@@ -80,7 +82,7 @@ class CustomDroneEnv(DiffDartEnv):
     def terminal_cost(self, x, compute_grads = False):
         x = torch.tensor(x, requires_grad=True)
 
-        x_target = torch.FloatTensor([1.0, 0.])
+        x_target = torch.from_numpy(self.target)
         coeff = torch.FloatTensor([50, 50])
         ter_cost = torch.sum(torch.mul(coeff, torch.mul(x - x_target, x - x_target)))
 
